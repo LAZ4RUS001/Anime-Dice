@@ -2,10 +2,40 @@
 -- [⚙️] Anime Dice - Ultimate Automation Suite (Street Hub Edition)
 -- Fully Modular Auto Farm, Fast Roll, Tower Raider, Plot & Upgrades
 -- Organized Categories & Bilingual (ไทย / English)
+-- Supported: PC, Delta Mobile, Fluxus, Hydrogen, Codex, Arceus X, Solara
 -- Street Hub for paneer
 -- =========================================================================
 
--- 1. PREAMBLE & PREVIOUS GUI CLEANUP
+-- 1. ENSURE GAME & LOCALPLAYER LOADED (Crucial for Delta Mobile, Fluxus, Codex, Arceus X auto-execute)
+if not game:IsLoaded() then
+    pcall(function() game.Loaded:Wait() end)
+end
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+while not LocalPlayer do
+    task.wait(0.1)
+    LocalPlayer = Players.LocalPlayer
+end
+
+-- Universal Safe GUI Parent Resolver (Prioritizes gethui for Mobile/PC, fallback to CoreGui/PlayerGui for Solara)
+local function GetSafeGuiParent()
+    local target = nil
+    if gethui then
+        pcall(function() target = gethui() end)
+    end
+    if not target then
+        pcall(function()
+            local cg = game:GetService("CoreGui")
+            local test = Instance.new("Folder", cg)
+            test:Destroy()
+            target = cg
+        end)
+    end
+    return target or LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- 2. PREVIOUS GUI CLEANUP
 pcall(function()
     if _G.StreetHubFluent and typeof(_G.StreetHubFluent) == "table" and _G.StreetHubFluent.Destroy then
         pcall(function() _G.StreetHubFluent:Destroy() end)
@@ -18,11 +48,13 @@ pcall(function()
     end
     if _G.StreetHubDiceRunning then
         _G.StreetHubDiceRunning = false
-        task.wait(1.0)
+        task.wait(0.3)
     end
-    local core = game:GetService("CoreGui")
-    local pgui = game:GetService("Players").LocalPlayer and game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui")
-    for _, container in ipairs({core, pgui}) do
+    local containers = {}
+    pcall(function() if gethui then table.insert(containers, gethui()) end end)
+    pcall(function() table.insert(containers, game:GetService("CoreGui")) end)
+    pcall(function() table.insert(containers, LocalPlayer:FindFirstChild("PlayerGui")) end)
+    for _, container in ipairs(containers) do
         if container then
             local existingToggle = container:FindFirstChild("StreetHubMobileToggle")
             if existingToggle then pcall(function() existingToggle:Destroy() end) end
@@ -53,12 +85,68 @@ end
 
 _G.StreetHubDiceRunning = true
 
+-- Resilient HttpGet fetcher (Handles Delta Mobile 302 redirects & network hiccups)
+local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
+local function FetchScript(url, maxRetries)
+    maxRetries = maxRetries or 3
+    for attempt = 1, maxRetries do
+        if httpRequest then
+            local reqOk, res = pcall(function()
+                return httpRequest({ Url = url, Method = "GET" })
+            end)
+            if reqOk and res and res.Body and #res.Body > 50 then
+                return res.Body
+            end
+        end
+        local ok, result = pcall(function()
+            return game:HttpGet(url, true)
+        end)
+        if ok and result and #result > 50 then
+            return result
+        end
+        task.wait(0.3)
+    end
+    return nil
+end
+
 -- =========================================================================
--- 2. LOAD FLUENT UI & ADDONS
+-- 3. LOAD FLUENT UI & ADDONS (Universal Safe Loader for Solara & Delta Mobile)
 -- =========================================================================
-local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
-local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
-local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
+local FluentRaw = FetchScript("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/releases/latest/download/main.lua")
+    or FetchScript("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/main.lua")
+    or FetchScript("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua")
+
+if not FluentRaw then
+    warn("[Street Hub] Failed to load Fluent UI library.")
+    return
+end
+
+local FluentPatched = FluentRaw
+    :gsub("game:GetService%'CoreGui%'", "game:GetService('Players').LocalPlayer:WaitForChild('PlayerGui')")
+    :gsub('game:GetService%("CoreGui"%)', "game:GetService('Players').LocalPlayer:WaitForChild('PlayerGui')")
+    :gsub("protectgui", "dummy_protectgui")
+    :gsub("protect_gui", "dummy_protect_gui")
+
+local Fluent = nil
+local okFluent, resFluent = pcall(function()
+    return loadstring(FluentPatched)()
+end)
+if okFluent and resFluent then
+    Fluent = resFluent
+else
+    Fluent = loadstring(FluentRaw)()
+end
+
+local SaveManager = nil
+pcall(function()
+    local smRaw = FetchScript("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua")
+    if smRaw then SaveManager = loadstring(smRaw)() end
+end)
+local InterfaceManager = nil
+pcall(function()
+    local imRaw = FetchScript("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua")
+    if imRaw then InterfaceManager = loadstring(imRaw)() end
+end)
 
 _G.StreetHubFluent = Fluent
 
@@ -68,14 +156,13 @@ Fluent.Notify = function(self, config)
 end
 
 -- =========================================================================
--- 3. INITIALIZE WINDOW & TABS FIRST (PRISTINE SECURITY CONTEXT)
+-- 4. INITIALIZE WINDOW & TABS FIRST (PRISTINE SECURITY CONTEXT)
 -- =========================================================================
-local LocalPlayer = game:GetService("Players").LocalPlayer
-local PlayerGui = LocalPlayer and LocalPlayer:WaitForChild("PlayerGui")
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 local UserInputService = game:GetService("UserInputService")
 
 -- Mobile / Delta Environment Detection & Responsive Window Dimensions
-local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+local isMobile = UserInputService.TouchEnabled and not (UserInputService.KeyboardEnabled and UserInputService.MouseEnabled)
 local camera = workspace.CurrentCamera
 local vpSize = camera and camera.ViewportSize or Vector2.new(800, 600)
 local winWidth = 590
@@ -83,9 +170,9 @@ local winHeight = 480
 local tabWidth = 160
 
 if isMobile or vpSize.X < 700 then
-    winWidth = math.clamp(math.floor(vpSize.X * 0.92), 320, 520)
-    winHeight = math.clamp(math.floor(vpSize.Y * 0.88), 300, 420)
-    tabWidth = math.clamp(math.floor(winWidth * 0.28), 100, 130)
+    winWidth = math.clamp(math.floor(vpSize.X * 0.92), 310, 520)
+    winHeight = math.clamp(math.floor(vpSize.Y * 0.88), 280, 420)
+    tabWidth = math.clamp(math.floor(winWidth * 0.28), 95, 125)
 end
 
 local Window = Fluent:CreateWindow({
@@ -99,9 +186,10 @@ local Window = Fluent:CreateWindow({
 })
 _G.StreetHubWindow = Window
 
-if Fluent.GUI and PlayerGui then
+if Fluent.GUI then
+    Fluent.GUI.ResetOnSpawn = false
     pcall(function()
-        Fluent.GUI.Parent = PlayerGui
+        Fluent.GUI.Parent = GetSafeGuiParent()
     end)
 end
 
@@ -222,7 +310,7 @@ iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8
     end)
 
     floatBtn.Parent = toggleGui
-    toggleGui.Parent = PlayerGui or game:GetService("CoreGui")
+    toggleGui.Parent = GetSafeGuiParent()
     _G.StreetHubMobileToggleGui = toggleGui
 end)
 
